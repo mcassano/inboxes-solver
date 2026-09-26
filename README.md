@@ -18,7 +18,15 @@ deterministically and renders the solution as a PNG.
 1. **Read the puzzle.** Either point the tool at a screenshot, which is sent
    to a vision-capable model on [OpenRouter](https://openrouter.ai/) to
    transcribe into a standardized JSON format, or hand it a puzzle already in
-   that format directly.
+   that format directly. Screenshots are auto-cropped to their content and
+   upscaled before transcription, since a puzzle grid is often a small
+   fraction of a full phone screenshot. Every transcription is double-checked
+   by actually solving it: a genuine Inboxes puzzle always has exactly one
+   solution, so a decode producing something unsolvable or ambiguous is
+   almost always a mis-transcription (a shifted clue, a miscounted row) — a
+   failure here retries, then falls back across a short list of models,
+   since a given model's mistakes on a given image tend to be a consistent
+   habit rather than random noise (`inboxes.vision.FALLBACK_MODELS`).
 2. **Solve it.** A deterministic constraint solver (`inboxes.solver`)
    enumerates every geometrically valid rectangle for each clue, then
    repeatedly eliminates candidates that conflict with already-placed

@@ -3,7 +3,7 @@ import time
 import pytest
 
 from inboxes.puzzle import Clue, Puzzle
-from inboxes.solver import Unsolvable, solve_puzzle, verify_solution
+from inboxes.solver import ShikakuSolver, Unsolvable, has_unique_solution, solve_puzzle, verify_solution
 
 from .helpers import random_puzzle
 
@@ -147,3 +147,43 @@ def test_verify_solution_detects_uncovered_cell():
     )
     with pytest.raises(ValueError, match="not covered"):
         verify_solution(puzzle)
+
+
+def test_count_solutions_counts_a_genuinely_ambiguous_puzzle():
+    # Diagonal 2x2 clues: tileable as two horizontal or two vertical strips.
+    puzzle = Puzzle(rows=2, cols=2, clues=[Clue(row=0, col=0, value=2), Clue(row=1, col=1, value=2)])
+    assert ShikakuSolver(puzzle).count_solutions(limit=5) == 2
+
+
+def test_count_solutions_respects_limit():
+    puzzle = Puzzle(rows=2, cols=2, clues=[Clue(row=0, col=0, value=2), Clue(row=1, col=1, value=2)])
+    assert ShikakuSolver(puzzle).count_solutions(limit=1) == 1
+
+
+def test_has_unique_solution_true_for_forced_puzzle():
+    puzzle = Puzzle(
+        rows=4,
+        cols=4,
+        clues=[
+            Clue(row=0, col=0, value=4),
+            Clue(row=0, col=2, value=4),
+            Clue(row=2, col=0, value=4),
+            Clue(row=2, col=2, value=4),
+        ],
+    )
+    assert has_unique_solution(puzzle) is True
+
+
+def test_has_unique_solution_false_for_ambiguous_puzzle():
+    puzzle = Puzzle(rows=2, cols=2, clues=[Clue(row=0, col=0, value=2), Clue(row=1, col=1, value=2)])
+    assert has_unique_solution(puzzle) is False
+
+
+def test_has_unique_solution_raises_for_unsolvable_puzzle():
+    puzzle = Puzzle(
+        rows=2,
+        cols=3,
+        clues=[Clue(row=0, col=0, value=3), Clue(row=0, col=2, value=3)],
+    )
+    with pytest.raises(Unsolvable):
+        has_unique_solution(puzzle)

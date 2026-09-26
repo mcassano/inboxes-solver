@@ -153,6 +153,41 @@ class ShikakuSolver:
             raise Unsolvable("no valid tiling found for this puzzle")
         return self._grid_to_solution(solved_grid)
 
+    def count_solutions(self, limit: int = 2) -> int:
+        """Count distinct tilings, stopping early once `limit` is reached.
+
+        A correctly-transcribed Inboxes puzzle always has exactly one
+        solution; used with limit=2, this doubles as an "is this puzzle
+        well-formed" check (see solver.has_unique_solution) that a corrupted
+        transcription -- one that happens to still be solvable -- often
+        fails, since an arbitrary tiling problem is much more likely to be
+        either impossible or ambiguous than to have exactly one answer.
+        """
+        grid = [[-1] * self.cols for _ in range(self.rows)]
+        remaining = {i: list(opts) for i, opts in enumerate(self.candidates)}
+        return self._count_search(grid, remaining, limit)
+
+    def _count_search(self, grid, remaining: dict[int, list[Rect]], limit: int) -> int:
+        if limit <= 0:
+            return 0
+        result = self._propagate(grid, remaining)
+        if result is None:
+            return 0
+        grid, remaining = result
+        if not remaining:
+            return 1
+        idx = min(remaining, key=lambda i: len(remaining[i]))
+        found = 0
+        for rect in remaining[idx]:
+            new_grid = [row[:] for row in grid]
+            self._place(new_grid, rect, idx)
+            new_remaining = dict(remaining)
+            del new_remaining[idx]
+            found += self._count_search(new_grid, new_remaining, limit - found)
+            if found >= limit:
+                break
+        return found
+
     def _grid_to_solution(self, grid) -> Puzzle:
         bounds = {}
         for r in range(self.rows):
@@ -177,6 +212,21 @@ class ShikakuSolver:
 
 def solve_puzzle(puzzle: Puzzle) -> Puzzle:
     return ShikakuSolver(puzzle).solve()
+
+
+def has_unique_solution(puzzle: Puzzle) -> bool:
+    """True if the puzzle has exactly one tiling.
+
+    Raises Unsolvable if it has none. A genuine Inboxes puzzle is always
+    uniquely solvable, which makes this a useful sanity check on a puzzle
+    decoded from a screenshot: a transcription error is much more likely to
+    produce an ambiguous (or impossible) tiling problem than a puzzle that
+    happens to still have exactly one answer.
+    """
+    count = ShikakuSolver(puzzle).count_solutions(limit=2)
+    if count == 0:
+        raise Unsolvable("no valid tiling found for this puzzle")
+    return count == 1
 
 
 def verify_solution(puzzle: Puzzle) -> None:

@@ -5,13 +5,31 @@ JSON format (see inboxes.puzzle) using a vision-capable model on OpenRouter.
 from __future__ import annotations
 
 import base64
-import mimetypes
+import io
 from pathlib import Path
+
+from PIL import Image, ImageChops
 
 from . import openrouter
 from .puzzle import Clue, Puzzle
+from .solver import Unsolvable, has_unique_solution
+
+# Cap on the longer edge of the image sent to the model, in pixels, after
+# cropping and upscaling (see _prepare_image). Keeps the base64 payload
+# bounded even for very large source screenshots.
+MAX_IMAGE_DIMENSION = 2200
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4.5"
+
+# Tried, in order, after DEFAULT_MODEL (or whatever model the caller asked
+# for) if it fails to produce a puzzle that passes every check in
+# _decode_once. Vision models each have their own, largely consistent
+# mis-transcription habits on this kind of dense numeric grid -- e.g. one
+# model may reliably drop a blank row, while another reliably shifts a
+# couple of clues in a specific row one column to the right -- so re-asking
+# the *same* model rarely fixes it (it tends to make the same mistake
+# again), but a different model often reads the trouble spot correctly.
+FALLBACK_MODELS = ["google/gemini-2.5-pro", "openai/gpt-4o"]
 
 # The model is asked for a dense, row-major grid (one array per row, one
 # entry per column, null for empty cells) rather than a sparse list of
@@ -53,13 +71,42 @@ the grid size from where the numbers are.
 """
 
 
-def _image_to_data_url(path: str | Path) -> str:
-    path = Path(path)
-    mime, _ = mimetypes.guess_type(path.name)
-    if mime is None:
-        mime = "image/png"
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{data}"
+def _prepare_image(path: str | Path) -> str:
+    """Load a screenshot, crop it to its non-white content, upscale it for
+    clarity, and return it as a data: URL.
+
+    Puzzle screenshots (especially from a phone) are often mostly blank
+    margin around a grid that ends up occupying a small, low-resolution
+    fraction of the image -- e.g. a status bar and a large blank area below
+    the grid. Trimming that away and enlarging what's left measurably
+    improves transcription accuracy without needing any puzzle-specific
+    grid-line detection: it's a plain whitespace autocrop.
+    """
+    img = Image.open(path)
+    if img.mode != "RGB":
+        flattened = Image.new("RGB", img.size, (255, 255, 255))
+        rgba = img.convert("RGBA")
+        flattened.paste(rgba, mask=rgba.split()[-1])
+        img = flattened
+
+    background = Image.new("RGB", img.size, (255, 255, 255))
+    bbox = ImageChops.difference(img, background).getbbox()
+    if bbox is not None:
+        pad = 8
+        left, top, right, bottom = bbox
+        left = max(0, left - pad)
+        top = max(0, top - pad)
+        right = min(img.width, right + pad)
+        bottom = min(img.height, bottom + pad)
+        img = img.crop((left, top, right, bottom))
+
+    scale = max(1.0, min(2.0, MAX_IMAGE_DIMENSION / max(img.size)))
+    if scale > 1.0:
+        img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
 
 class VisionDecodeError(RuntimeError):
@@ -85,19 +132,8 @@ def _grid_to_puzzle(data: dict) -> Puzzle:
     return Puzzle(rows=len(grid), cols=cols, clues=clues)
 
 
-def decode_screenshot(image_path: str | Path, model: str = DEFAULT_MODEL, max_attempts: int = 3) -> Puzzle:
-    """Send a puzzle screenshot to a vision model on OpenRouter and return a Puzzle.
-
-    The most common mistake vision models make on this task is mis-counting
-    the grid's rows or columns (especially ones with no clues in them at
-    all); asking for a dense grid instead of a sparse clue list (see
-    SYSTEM_PROMPT) largely prevents that. As a second line of defence,
-    Puzzle.validate() catches anything that still slips through -- a real
-    Inboxes puzzle always has clue values that sum to exactly rows * cols --
-    so on a validation failure we report the error back to the model and
-    give it another shot, up to max_attempts tries, before giving up.
-    """
-    data_url = _image_to_data_url(image_path)
+def _decode_once(model: str, data_url: str) -> Puzzle:
+    """One single-shot decode attempt, fully checked. Raises on any defect."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -108,27 +144,43 @@ def decode_screenshot(image_path: str | Path, model: str = DEFAULT_MODEL, max_at
             ],
         },
     ]
+    content = openrouter.chat(model, messages, timeout=120, max_tokens=4096)
+    data = openrouter.extract_json(content)
+    puzzle = _grid_to_puzzle(data)
+    puzzle.validate()
+    # A clue shifted to the wrong cell can leave the value sum untouched, so
+    # validate() alone won't catch it. Run it through the real solver: a
+    # genuine Inboxes puzzle always has exactly one tiling, so anything
+    # unsolvable, or ambiguous, is almost certainly a mis-transcription.
+    if not has_unique_solution(puzzle):
+        raise ValueError("puzzle has more than one valid solution (likely a mis-transcribed clue)")
+    return puzzle
+
+
+def decode_screenshot(
+    image_path: str | Path,
+    model: str = DEFAULT_MODEL,
+    attempts_per_model: int = 3,
+) -> Puzzle:
+    """Send a puzzle screenshot to a vision model on OpenRouter and return a Puzzle.
+
+    `model` is tried first, followed by FALLBACK_MODELS, each for up to
+    `attempts_per_model` independent single-shot attempts; the first
+    fully-checked result wins. Falling back to a different model (rather
+    than just re-asking the same one) matters because these mistakes tend to
+    be a consistent habit of a given model on a given image, not random
+    noise -- re-sampling the same model usually reproduces the same error.
+    """
+    data_url = _prepare_image(image_path)
+    models = [model] + [m for m in FALLBACK_MODELS if m != model]
     last_error: Exception | None = None
-    for attempt in range(max_attempts):
-        content = openrouter.chat(model, messages, timeout=120)
-        try:
-            data = openrouter.extract_json(content)
-            puzzle = _grid_to_puzzle(data)
-            puzzle.validate()
-            return puzzle
-        except (ValueError, KeyError, TypeError) as exc:
-            last_error = exc
-            messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"That is invalid: {exc}. Re-examine the screenshot, recount the grid "
-                        "lines and clue values row by row, and answer again with the corrected "
-                        "grid as JSON only."
-                    ),
-                }
-            )
+    for candidate_model in models:
+        for _ in range(attempts_per_model):
+            try:
+                return _decode_once(candidate_model, data_url)
+            except (ValueError, KeyError, TypeError, Unsolvable, openrouter.OpenRouterError) as exc:
+                last_error = exc
     raise VisionDecodeError(
-        f"could not decode a valid puzzle from {image_path} after {max_attempts} attempts: {last_error}"
+        f"could not decode a valid puzzle from {image_path} after trying "
+        f"{', '.join(models)}: {last_error}"
     ) from last_error

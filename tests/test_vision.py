@@ -1,14 +1,47 @@
+import base64
+import io
 import json
 
 import pytest
+from PIL import Image
 
 from inboxes import openrouter, vision
 
 
-def test_image_to_data_url_png(tmp_path):
+def _write_test_image(path, size=(40, 20), color=(255, 255, 255)):
+    Image.new("RGB", size, color).save(path)
+
+
+def test_prepare_image_returns_data_url(tmp_path):
     img_path = tmp_path / "puzzle.png"
-    img_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-bytes")
-    data_url = vision._image_to_data_url(img_path)
+    _write_test_image(img_path)
+    data_url = vision._prepare_image(img_path)
+    assert data_url.startswith("data:image/png;base64,")
+
+
+def test_prepare_image_crops_whitespace_and_upscales(tmp_path):
+    img_path = tmp_path / "puzzle.png"
+    # A 10x10 black square sitting in a much larger white canvas.
+    img = Image.new("RGB", (200, 200), (255, 255, 255))
+    for x in range(80, 90):
+        for y in range(80, 90):
+            img.putpixel((x, y), (0, 0, 0))
+    img.save(img_path)
+
+    data_url = vision._prepare_image(img_path)
+    header, b64 = data_url.split(",", 1)
+    assert header == "data:image/png;base64"
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64)))
+    # Cropped to roughly the 10x10 square (plus padding) then upscaled 2x,
+    # so it should end up much smaller than the original 200x200 canvas.
+    assert decoded.width < 100
+    assert decoded.height < 100
+
+
+def test_prepare_image_handles_rgba_input(tmp_path):
+    img_path = tmp_path / "puzzle.png"
+    Image.new("RGBA", (30, 30), (10, 10, 10, 255)).save(img_path)
+    data_url = vision._prepare_image(img_path)
     assert data_url.startswith("data:image/png;base64,")
 
 
@@ -38,19 +71,31 @@ def test_grid_to_puzzle_rejects_missing_grid_key():
         vision._grid_to_puzzle({})
 
 
+# A 2x2 grid with clues (0,0)=2 and (0,1)=2: each clue's only geometrically
+# possible rectangle (that doesn't swallow the other clue) is a vertical
+# 2x1 strip in its own column, so this has exactly one solution.
+UNIQUE_GRID_JSON = {"grid": [[2, 2], [None, None]]}
+
+# A 2x3 grid with clues (0,0)=3 and (0,2)=3: the only geometrically possible
+# rectangle for either clue is the entire top row, which would swallow the
+# other clue -- so neither clue has any valid placement at all.
+UNSOLVABLE_GRID_JSON = {"grid": [[3, None, 3], [None, None, None]]}
+
+# A single clue covering the whole 2x3 grid: trivially, uniquely solvable.
+SINGLE_CLUE_GRID_JSON = {"grid": [[6, None, None], [None, None, None]]}
+
+
 def test_decode_screenshot_parses_valid_response(tmp_path, monkeypatch):
     img_path = tmp_path / "puzzle.png"
-    img_path.write_bytes(b"fake-png-bytes")
+    _write_test_image(img_path)
 
-    grid_json = {"grid": [[2, 2], [None, None]]}
-
-    def fake_chat(model, messages, timeout=120, temperature=0):
+    def fake_chat(model, messages, **kwargs):
         assert model == vision.DEFAULT_MODEL
         # Sanity check the image was embedded as a data URL in the payload.
         image_content = messages[1]["content"][1]
         assert image_content["type"] == "image_url"
         assert image_content["image_url"]["url"].startswith("data:image/png;base64,")
-        return f"```json\n{json.dumps(grid_json)}\n```"
+        return f"```json\n{json.dumps(UNIQUE_GRID_JSON)}\n```"
 
     monkeypatch.setattr(openrouter, "chat", fake_chat)
 
@@ -60,42 +105,126 @@ def test_decode_screenshot_parses_valid_response(tmp_path, monkeypatch):
     assert len(puzzle.clues) == 2
 
 
-def test_decode_screenshot_retries_then_raises_on_persistently_invalid_puzzle(tmp_path, monkeypatch):
+def test_decode_screenshot_retries_same_model_before_falling_back(tmp_path, monkeypatch):
     img_path = tmp_path / "puzzle.png"
-    img_path.write_bytes(b"fake-png-bytes")
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", ["model-b"])
 
-    # Area sum (3) does not match the grid size (2x2=4), so validate() must
-    # fail every time -- this exercises the retry-with-feedback loop giving up.
+    # Area sum (3) does not match the grid size (2x2=4), so validate() fails
+    # on the first attempt; the second attempt (same model) succeeds.
     bad_json = {"grid": [[3, None], [None, None]]}
+    responses = [json.dumps(bad_json), json.dumps(UNIQUE_GRID_JSON)]
     calls = []
 
-    def fake_chat(model, messages, timeout=120, temperature=0):
-        calls.append(messages)
-        return json.dumps(bad_json)
-
-    monkeypatch.setattr(openrouter, "chat", fake_chat)
-
-    with pytest.raises(vision.VisionDecodeError, match="after 3 attempts"):
-        vision.decode_screenshot(img_path, max_attempts=3)
-    assert len(calls) == 3
-    # Each retry should feed the previous bad answer and the error back in.
-    assert calls[-1][-1]["role"] == "user"
-    assert "invalid" in calls[-1][-1]["content"]
-
-
-def test_decode_screenshot_recovers_after_one_bad_attempt(tmp_path, monkeypatch):
-    img_path = tmp_path / "puzzle.png"
-    img_path.write_bytes(b"fake-png-bytes")
-
-    bad_json = {"grid": [[3, None], [None, None]]}
-    good_json = {"grid": [[2, 2], [None, None]]}
-    responses = [json.dumps(bad_json), json.dumps(good_json)]
-
-    def fake_chat(model, messages, timeout=120, temperature=0):
+    def fake_chat(model, messages, **kwargs):
+        calls.append(model)
         return responses.pop(0)
 
     monkeypatch.setattr(openrouter, "chat", fake_chat)
 
-    puzzle = vision.decode_screenshot(img_path, max_attempts=3)
+    puzzle = vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
+    assert len(puzzle.clues) == 2
+    assert calls == ["model-a", "model-a"]  # never needed to fall back
+
+
+def test_decode_screenshot_falls_back_to_a_different_model(tmp_path, monkeypatch):
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", ["model-b"])
+
+    bad_json = {"grid": [[3, None], [None, None]]}
+
+    def fake_chat(model, messages, **kwargs):
+        # model-a keeps making the same mistake every time; model-b gets it
+        # right immediately -- mirrors a model with a consistent habit of
+        # misreading a particular puzzle, where switching models (not
+        # re-sampling the same one) is what actually fixes it.
+        if model == "model-a":
+            return json.dumps(bad_json)
+        return json.dumps(UNIQUE_GRID_JSON)
+
+    monkeypatch.setattr(openrouter, "chat", fake_chat)
+
+    puzzle = vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
+    assert len(puzzle.clues) == 2
+
+
+def test_decode_screenshot_exhausts_every_model_then_raises(tmp_path, monkeypatch):
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", ["model-b"])
+
+    bad_json = {"grid": [[3, None], [None, None]]}
+    calls = []
+
+    def fake_chat(model, messages, **kwargs):
+        calls.append(model)
+        return json.dumps(bad_json)
+
+    monkeypatch.setattr(openrouter, "chat", fake_chat)
+
+    with pytest.raises(vision.VisionDecodeError, match="model-a, model-b"):
+        vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
+    assert calls == ["model-a", "model-a", "model-b", "model-b"]
+
+
+def test_decode_screenshot_rejects_structurally_valid_but_unsolvable_puzzle(tmp_path, monkeypatch):
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", [])
+
+    # Sum (3 + 3 = 6) matches the grid size (2x3 = 6), so validate() passes,
+    # but this is the "clue shifted to the wrong cell" failure mode that a
+    # sum check alone can't catch -- only the solver oracle catches it.
+    monkeypatch.setattr(openrouter, "chat", lambda *a, **k: json.dumps(UNSOLVABLE_GRID_JSON))
+
+    with pytest.raises(vision.VisionDecodeError, match="model-a"):
+        vision.decode_screenshot(img_path, model="model-a", attempts_per_model=1)
+
+
+def test_decode_screenshot_recovers_after_unsolvable_attempt(tmp_path, monkeypatch):
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", [])
+
+    responses = [json.dumps(UNSOLVABLE_GRID_JSON), json.dumps(SINGLE_CLUE_GRID_JSON)]
+    monkeypatch.setattr(openrouter, "chat", lambda *a, **k: responses.pop(0))
+
+    puzzle = vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
+    assert len(puzzle.clues) == 1
+    assert responses == []
+
+
+def test_decode_screenshot_rejects_ambiguous_puzzle(tmp_path, monkeypatch):
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", [])
+
+    # A 2x2 grid with clues (0,0)=2 and (1,1)=2 diagonally opposite: it can
+    # be tiled either as two horizontal strips or two vertical strips, both
+    # valid -- two distinct solutions, so it's genuinely ambiguous.
+    ambiguous_json = {"grid": [[2, None], [None, 2]]}
+    monkeypatch.setattr(openrouter, "chat", lambda *a, **k: json.dumps(ambiguous_json))
+
+    with pytest.raises(vision.VisionDecodeError, match="model-a"):
+        vision.decode_screenshot(img_path, model="model-a", attempts_per_model=1)
+
+
+def test_decode_screenshot_recovers_from_truncated_response(tmp_path, monkeypatch):
+    # A response that got cut off mid-generation (e.g. the model ran away
+    # hallucinating extra rows and hit the token limit) has no closing
+    # brace at all -- openrouter.extract_json raises OpenRouterError for
+    # that, which is a different exception family than the ValueError family
+    # everything else here raises, and it used to slip past the retry loop
+    # and crash the whole CLI instead of triggering a retry/fallback.
+    img_path = tmp_path / "puzzle.png"
+    _write_test_image(img_path)
+    monkeypatch.setattr(vision, "FALLBACK_MODELS", [])
+
+    truncated = '{"grid": [[2, 2], [null, null'  # no closing brace
+    responses = [truncated, json.dumps(UNIQUE_GRID_JSON)]
+    monkeypatch.setattr(openrouter, "chat", lambda *a, **k: responses.pop(0))
+
+    puzzle = vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
     assert len(puzzle.clues) == 2
     assert responses == []

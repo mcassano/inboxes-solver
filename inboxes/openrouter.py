@@ -38,15 +38,25 @@ def extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
-def chat(model: str, messages: list[dict], *, temperature: float = 0, timeout: int = 120) -> str:
+def chat(
+    model: str,
+    messages: list[dict],
+    *,
+    temperature: float = 0,
+    timeout: int = 120,
+    max_tokens: int | None = None,
+) -> str:
     """Call the OpenRouter chat-completions endpoint and return the reply text."""
+    payload = {"model": model, "messages": messages, "temperature": temperature}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     response = requests.post(
         OPENROUTER_URL,
         headers={
             "Authorization": f"Bearer {api_key()}",
             "Content-Type": "application/json",
         },
-        json={"model": model, "messages": messages, "temperature": temperature},
+        json=payload,
         timeout=timeout,
     )
     if response.status_code != 200:
