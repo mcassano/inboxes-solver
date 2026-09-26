@@ -1,5 +1,6 @@
 import json
 
+from inboxes import vision
 from inboxes.cli import main
 
 
@@ -63,3 +64,18 @@ def test_cli_requires_a_source():
         assert exc.code != 0
     else:
         raise AssertionError("expected argparse to require --puzzle or --screenshot")
+
+
+def test_cli_reports_vision_decode_failure_cleanly(tmp_path, monkeypatch, capsys):
+    img_path = tmp_path / "puzzle.png"
+    img_path.write_bytes(b"fake-png-bytes")
+
+    def fake_decode(*args, **kwargs):
+        raise vision.VisionDecodeError("could not decode a valid puzzle: boom")
+
+    monkeypatch.setattr("inboxes.cli.decode_screenshot", fake_decode)
+
+    exit_code = main(["--screenshot", str(img_path)])
+
+    assert exit_code == 1
+    assert "could not decode a valid puzzle" in capsys.readouterr().err

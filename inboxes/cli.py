@@ -12,7 +12,7 @@ from .puzzle import Puzzle
 from .render import render_puzzle
 from .solver import Unsolvable, solve_puzzle, verify_solution
 from .vision import DEFAULT_MODEL as DEFAULT_VISION_MODEL
-from .vision import decode_screenshot
+from .vision import VisionDecodeError, decode_screenshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +63,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.screenshot:
         print(f"Decoding {args.screenshot} with {args.vision_model}...", file=sys.stderr)
-        puzzle = decode_screenshot(args.screenshot, model=args.vision_model)
+        try:
+            puzzle = decode_screenshot(args.screenshot, model=args.vision_model)
+        except VisionDecodeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            print(
+                "hint: transcribe the puzzle by hand into the JSON format "
+                "described in the README and pass it with --puzzle instead.",
+                file=sys.stderr,
+            )
+            return 1
         if args.decoded_out:
             puzzle.save(args.decoded_out)
             print(f"Wrote decoded puzzle to {args.decoded_out}", file=sys.stderr)
