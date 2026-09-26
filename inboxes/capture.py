@@ -28,7 +28,19 @@ DEFAULT_OUT_PATH = Path("webcam_capture.png")
 
 # Variance of the Laplacian of the grayscale frame -- a standard, simple
 # focus/blur metric. Higher means sharper (more high-frequency detail).
-DEFAULT_SHARPNESS_THRESHOLD = 150.0
+#
+# This is a full-frame average, so it's diluted by whatever fraction of the
+# frame isn't the puzzle itself (background, hand, phone bezel) -- it's not
+# comparable to "textbook" Laplacian-variance thresholds tuned on a frame
+# that's mostly in-focus subject. 150 (a generic guess) was never reachable
+# in practice: measured live against a Studio Display webcam with a phone
+# screen clearly in frame and readable, steady-state values sat around
+# 9-15, vs. ~0 with nothing in frame. 8.0 sits comfortably below that
+# steady-state range with headroom, while still well above "nothing/totally
+# blurry". If a different camera or distance needs a different number, the
+# live [capture] log printed while waiting shows the real numbers to
+# recalibrate --sharpness-threshold against.
+DEFAULT_SHARPNESS_THRESHOLD = 8.0
 
 # Mean absolute pixel difference (0-255 scale) between consecutive grayscale
 # frames. Lower means less motion between frames.
