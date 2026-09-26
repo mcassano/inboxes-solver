@@ -53,6 +53,15 @@ DEFAULT_SETTLE_FRAMES = 10
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
+# Once settled, grab this many extra frames and keep the sharpest rather than
+# committing to whichever single frame first happened to hit the streak
+# requirement -- every full-frame sharpness reading we've measured live has
+# been low (roughly 7-16) even on "clearly readable" shots, and every single
+# live webcam capture has still failed to decode, so the single settled
+# instant is apparently not reliably the best available moment. This costs a
+# few extra frames (well under a second).
+BURST_FRAMES = 8
+
 REQUESTED_FRAME_WIDTH = 1920
 REQUESTED_FRAME_HEIGHT = 1080
 
@@ -215,6 +224,7 @@ def capture_from_webcam(
     cap = cv2.VideoCapture(camera_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, REQUESTED_FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_FRAME_HEIGHT)
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)  # no-op if the device doesn't support it
     if not cap.isOpened():
         cap.release()
         raise CaptureError(
@@ -292,8 +302,22 @@ def capture_from_webcam(
                     print("Armed -- hold steady...", file=sys.stderr)
 
             if settled:
+                best_frame, best_sharpness = frame, sharpness
+                for _ in range(BURST_FRAMES):
+                    ok, burst_frame = cap.read()
+                    if not ok or burst_frame is None:
+                        break
+                    burst_sharpness = sharpness_score(cv2.cvtColor(burst_frame, cv2.COLOR_BGR2GRAY))
+                    if burst_sharpness > best_sharpness:
+                        best_frame, best_sharpness = burst_frame, burst_sharpness
+                if debug_log:
+                    print(
+                        f"[capture] settled at sharpness={sharpness:.1f}; best of "
+                        f"{BURST_FRAMES}-frame burst was {best_sharpness:.1f}",
+                        file=sys.stderr,
+                    )
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(out_path), _crop_to_screen(frame))
+                cv2.imwrite(str(out_path), _crop_to_screen(best_frame))
                 return out_path
     finally:
         cap.release()

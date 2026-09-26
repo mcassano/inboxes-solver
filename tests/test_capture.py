@@ -335,3 +335,28 @@ def test_capture_from_webcam_saves_a_frame_cropped_to_the_screen(tmp_path, monke
     saved = cv2.imread(str(out_path))
     assert saved.shape[0] < frame.shape[0]
     assert saved.shape[1] < frame.shape[1]
+
+
+def test_capture_from_webcam_picks_sharpest_frame_from_burst(tmp_path, monkeypatch):
+    # A single settled instant isn't necessarily the best available shot --
+    # once settled, a short burst of extra frames is read and the sharpest
+    # one is kept, even though it wasn't the frame that triggered settling.
+    sharp = cv2.cvtColor(_checkerboard(size=32), cv2.COLOR_GRAY2BGR)
+    dim = cv2.GaussianBlur(sharp, (9, 9), sigmaX=4)
+
+    frames = [dim.copy() for _ in range(3)] + [dim.copy(), sharp.copy(), dim.copy(), dim.copy()]
+    fake = _FakeCapture(frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+
+    out_path = tmp_path / "capture.png"
+    capture_from_webcam(
+        out_path=out_path,
+        show_preview=False,
+        sharpness_threshold=1,  # low enough that the "dim" frames still settle
+        motion_threshold=1000,
+        settle_frames=3,
+    )
+
+    saved_gray = cv2.cvtColor(cv2.imread(str(out_path)), cv2.COLOR_BGR2GRAY)
+    dim_gray = cv2.cvtColor(dim, cv2.COLOR_BGR2GRAY)
+    assert sharpness_score(saved_gray) > sharpness_score(dim_gray) * 2
