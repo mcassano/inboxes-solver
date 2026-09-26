@@ -8,7 +8,9 @@ np = pytest.importorskip("numpy")
 from inboxes.capture import (  # noqa: E402
     CaptureError,
     SettleDetector,
+    _crop_to_screen,
     capture_from_webcam,
+    detect_screen_bbox,
     motion_score,
     sharpness_score,
 )
@@ -257,3 +259,79 @@ def test_capture_from_webcam_timeout_only_counts_after_arming(tmp_path, monkeypa
             timeout_seconds=2.0,
         )
     assert clock["t"] < 10.0
+
+
+def _frame_with_bright_rect(size=(300, 400), rect=(80, 50, 320, 250), bg=30, fg=220):
+    height, width = size
+    frame = np.full((height, width, 3), bg, dtype=np.uint8)
+    x0, y0, x1, y1 = rect
+    frame[y0:y1, x0:x1] = fg
+    return frame
+
+
+class TestDetectScreenBbox:
+    def test_finds_a_bright_rectangle_on_a_dark_background(self):
+        frame = _frame_with_bright_rect()
+        bbox = detect_screen_bbox(frame)
+        assert bbox is not None
+        x0, y0, x1, y1 = bbox
+        assert abs(x0 - 80) <= 5
+        assert abs(y0 - 50) <= 5
+        assert abs(x1 - 320) <= 5
+        assert abs(y1 - 250) <= 5
+
+    def test_returns_none_when_bright_region_is_too_small(self):
+        # A tiny bright patch, well under MIN_SCREEN_AREA_FRACTION of the frame.
+        frame = _frame_with_bright_rect(size=(400, 400), rect=(10, 10, 30, 30))
+        assert detect_screen_bbox(frame) is None
+
+    def test_returns_none_for_a_uniform_frame(self):
+        frame = np.full((200, 200, 3), 128, dtype=np.uint8)
+        assert detect_screen_bbox(frame) is None
+
+
+class TestCropToScreen:
+    def test_crops_to_the_detected_screen(self):
+        frame = _frame_with_bright_rect(size=(300, 400))
+        cropped = _crop_to_screen(frame)
+        assert cropped.shape[0] < 300
+        assert cropped.shape[1] < 400
+        # Should still be a sensible size, not degenerate.
+        assert cropped.shape[0] > 150
+        assert cropped.shape[1] > 150
+
+    def test_falls_back_to_the_full_frame_when_nothing_detected(self):
+        frame = np.full((200, 200, 3), 128, dtype=np.uint8)
+        cropped = _crop_to_screen(frame)
+        assert cropped.shape == frame.shape
+
+    def test_warns_when_the_screen_touches_a_frame_edge(self, capsys):
+        # Bright region spans the full height -- touches the top and bottom edges.
+        frame = _frame_with_bright_rect(size=(200, 300), rect=(50, 0, 250, 200))
+        _crop_to_screen(frame)
+        assert "touches the edge" in capsys.readouterr().err
+
+    def test_does_not_warn_when_the_screen_has_margin(self, capsys):
+        frame = _frame_with_bright_rect(size=(300, 400), rect=(80, 50, 320, 250))
+        _crop_to_screen(frame)
+        assert "touches the edge" not in capsys.readouterr().err
+
+
+def test_capture_from_webcam_saves_a_frame_cropped_to_the_screen(tmp_path, monkeypatch):
+    frame = _frame_with_bright_rect(size=(300, 400))
+    frames = [frame.copy() for _ in range(5)]
+    fake = _FakeCapture(frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+
+    out_path = tmp_path / "capture.png"
+    capture_from_webcam(
+        out_path=out_path,
+        show_preview=False,
+        sharpness_threshold=0,  # this synthetic frame has no real texture/focus
+        motion_threshold=5,
+        settle_frames=3,
+    )
+
+    saved = cv2.imread(str(out_path))
+    assert saved.shape[0] < frame.shape[0]
+    assert saved.shape[1] < frame.shape[1]

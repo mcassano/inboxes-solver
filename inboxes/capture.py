@@ -56,6 +56,22 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 REQUESTED_FRAME_WIDTH = 1920
 REQUESTED_FRAME_HEIGHT = 1080
 
+# A phone screen showing this puzzle is much brighter than a typical room
+# background, so Otsu's method (which picks a threshold that best splits the
+# image into two brightness clusters) reliably isolates it without needing a
+# fixed brightness number that would vary by lighting.
+MIN_SCREEN_AREA_FRACTION = 0.05
+
+# On a frame with no real bright/dark split (e.g. pointed at a blank wall),
+# Otsu's threshold is degenerate and can classify the entire frame as one
+# blob. That's not a useful "screen" detection -- cropping to it would be a
+# no-op anyway -- so treat anything this large as no detection.
+MAX_SCREEN_AREA_FRACTION = 0.92
+
+# How close (as a fraction of that dimension) the detected screen region can
+# get to a frame edge before we warn that it looks cropped.
+EDGE_WARNING_MARGIN_FRACTION = 0.02
+
 
 class CaptureError(RuntimeError):
     pass
@@ -69,6 +85,68 @@ def sharpness_score(gray: np.ndarray) -> float:
 def motion_score(prev_gray: np.ndarray, gray: np.ndarray) -> float:
     """Higher = more movement between the two (same-shape) grayscale frames."""
     return float(np.mean(cv2.absdiff(prev_gray, gray)))
+
+
+def detect_screen_bbox(frame_bgr: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Find the bright phone-screen rectangle in a webcam frame, if any.
+
+    Returns (x0, y0, x1, y1) pixel bounds, or None if nothing confidently
+    screen-shaped was found (caller should fall back to using the whole
+    frame). This matters because a webcam photo's background usually isn't a
+    plain white page the way a screenshot's is -- the whitespace autocrop in
+    inboxes.vision._prepare_image barely trims a photo like this, leaving the
+    puzzle as a small, low-resolution fraction of what gets sent to the
+    vision model.
+    """
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    largest = max(contours, key=cv2.contourArea)
+    frame_area = frame_bgr.shape[0] * frame_bgr.shape[1]
+    area = cv2.contourArea(largest)
+    if area < frame_area * MIN_SCREEN_AREA_FRACTION or area > frame_area * MAX_SCREEN_AREA_FRACTION:
+        return None
+
+    x, y, w, h = cv2.boundingRect(largest)
+    return x, y, x + w, y + h
+
+
+def _crop_to_screen(frame_bgr: np.ndarray) -> np.ndarray:
+    """Crop a captured frame to its detected phone screen, with padding.
+
+    Warns on stderr (but still returns the crop) if the detected region
+    touches a frame edge, since that usually means part of the screen was
+    outside the camera's field of view -- e.g. the puzzle's last row cut off
+    the bottom of the shot.
+    """
+    bbox = detect_screen_bbox(frame_bgr)
+    if bbox is None:
+        return frame_bgr
+
+    height, width = frame_bgr.shape[:2]
+    x0, y0, x1, y1 = bbox
+    margin_x = round(width * EDGE_WARNING_MARGIN_FRACTION)
+    margin_y = round(height * EDGE_WARNING_MARGIN_FRACTION)
+    if x0 <= margin_x or y0 <= margin_y or x1 >= width - margin_x or y1 >= height - margin_y:
+        print(
+            "warning: the detected phone screen touches the edge of the camera's "
+            "view -- part of the puzzle may be cropped off. Try holding it further "
+            "back, or centered lower/higher, so the whole grid is visible with "
+            "some margin around it.",
+            file=sys.stderr,
+        )
+
+    pad_x = round((x1 - x0) * 0.03)
+    pad_y = round((y1 - y0) * 0.03)
+    x0 = max(0, x0 - pad_x)
+    y0 = max(0, y0 - pad_y)
+    x1 = min(width, x1 + pad_x)
+    y1 = min(height, y1 + pad_y)
+    return frame_bgr[y0:y1, x0:x1]
 
 
 class SettleDetector:
@@ -211,7 +289,7 @@ def capture_from_webcam(
 
             if settled:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(out_path), frame)
+                cv2.imwrite(str(out_path), _crop_to_screen(frame))
                 return out_path
     finally:
         cap.release()

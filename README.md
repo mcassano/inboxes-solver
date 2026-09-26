@@ -96,6 +96,15 @@ keypress itself doesn't jostle the shot). Press `q` or Esc to abort:
 python -m inboxes --webcam --decoded-out puzzle.json --out solution.json --png solution.png
 ```
 
+The captured frame is automatically cropped to the bright phone-screen
+rectangle it detects (falling back to the full frame if it can't find one
+confidently), since the rest of the shot — background, hand, phone bezel —
+would otherwise dilute the puzzle down to a small, low-resolution corner of
+what gets sent to the vision model. If the detected screen touches an edge of
+the camera's view, it prints a warning that the puzzle may be cropped off —
+hold the phone further back, or reposition it, so the whole grid has some
+margin around it.
+
 `--webcam` requires the `opencv-python` extra in `requirements.txt`, and (on
 macOS) camera access granted to your terminal under System Settings > Privacy
 & Security > Camera — the first run will prompt for this. If it opens the
@@ -103,8 +112,9 @@ wrong camera (e.g. an iPhone connected via Continuity Camera instead of a
 built-in/external webcam), pass `--camera-index 1`, `2`, etc. to find the
 right one. If it captures too eagerly or never settles, tune
 `--sharpness-threshold` / `--motion-threshold` / `--settle-frames` using the
-live numbers in the preview window as a guide. The raw photo is saved to
-`webcam_capture.png` (override with `--capture-out`) so you can check exactly
+live numbers in the preview window as a guide. The raw (post-crop) photo is
+saved to `webcam_capture.png` (override with `--capture-out`) so you can
+check exactly
 what was captured if decoding goes wrong.
 
 Solve with an LLM instead of the deterministic solver:
