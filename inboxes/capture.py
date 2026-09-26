@@ -77,15 +77,6 @@ MIN_SCREEN_AREA_FRACTION = 0.05
 # no-op anyway -- so treat anything this large as no detection.
 MAX_SCREEN_AREA_FRACTION = 0.92
 
-# How close, in pixels, the detected screen region can get to a frame edge
-# before we warn that it looks cropped. A small fixed margin rather than a
-# fraction of the frame: a percentage-based margin (e.g. 2% of a 1920px-wide
-# frame is ~38px) fired even when there was clearly visible margin in the
-# photo, most likely because glare/reflection off the phone's glass widens
-# the detected "bright" blob without any actual puzzle content being cut off.
-# This should only fire for the region genuinely touching the boundary.
-EDGE_WARNING_MARGIN_PIXELS = 3
-
 
 class CaptureError(RuntimeError):
     pass
@@ -132,10 +123,12 @@ def detect_screen_bbox(frame_bgr: np.ndarray) -> tuple[int, int, int, int] | Non
 def _crop_to_screen(frame_bgr: np.ndarray) -> np.ndarray:
     """Crop a captured frame to its detected phone screen, with padding.
 
-    Warns on stderr (but still returns the crop) if the detected region
-    touches a frame edge, since that usually means part of the screen was
-    outside the camera's field of view -- e.g. the puzzle's last row cut off
-    the bottom of the shot.
+    Deliberately does not warn about the region touching a frame edge. That
+    check used to live here and was wrong every time it fired -- glare on the
+    phone's glass widens the detected bright region without any puzzle
+    content actually being cut off. Whether the grid is really complete is
+    settled downstream and for real: inboxes.grid_detect has to find a full
+    lattice in it, and the solver has to find exactly one solution.
     """
     bbox = detect_screen_bbox(frame_bgr)
     if bbox is None:
@@ -143,16 +136,6 @@ def _crop_to_screen(frame_bgr: np.ndarray) -> np.ndarray:
 
     height, width = frame_bgr.shape[:2]
     x0, y0, x1, y1 = bbox
-    margin = EDGE_WARNING_MARGIN_PIXELS
-    if x0 <= margin or y0 <= margin or x1 >= width - margin or y1 >= height - margin:
-        print(
-            "warning: the detected phone screen touches the edge of the camera's "
-            "view -- part of the puzzle may be cropped off. Try holding it further "
-            "back, or centered lower/higher, so the whole grid is visible with "
-            "some margin around it.",
-            file=sys.stderr,
-        )
-
     pad_x = round((x1 - x0) * 0.03)
     pad_y = round((y1 - y0) * 0.03)
     x0 = max(0, x0 - pad_x)

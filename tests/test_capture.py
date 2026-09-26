@@ -305,16 +305,19 @@ class TestCropToScreen:
         cropped = _crop_to_screen(frame)
         assert cropped.shape == frame.shape
 
-    def test_warns_when_the_screen_touches_a_frame_edge(self, capsys):
-        # Bright region spans the full height -- touches the top and bottom edges.
+    def test_never_warns_about_touching_a_frame_edge(self, capsys):
+        # This warning was removed: it fired on every real capture while the
+        # puzzle was entirely in view, because glare on the phone's glass
+        # widens the detected bright region. Whether the grid is complete is
+        # now established downstream by grid_detect and the solver.
         frame = _frame_with_bright_rect(size=(200, 300), rect=(50, 0, 250, 200))
         _crop_to_screen(frame)
-        assert "touches the edge" in capsys.readouterr().err
+        assert capsys.readouterr().err == ""
 
-    def test_does_not_warn_when_the_screen_has_margin(self, capsys):
-        frame = _frame_with_bright_rect(size=(300, 400), rect=(80, 50, 320, 250))
-        _crop_to_screen(frame)
-        assert "touches the edge" not in capsys.readouterr().err
+    def test_crops_a_screen_that_reaches_a_frame_edge(self):
+        frame = _frame_with_bright_rect(size=(200, 300), rect=(50, 0, 250, 200))
+        cropped = _crop_to_screen(frame)
+        assert cropped.shape[1] < frame.shape[1]
 
 
 def test_capture_from_webcam_saves_a_frame_cropped_to_the_screen(tmp_path, monkeypatch):

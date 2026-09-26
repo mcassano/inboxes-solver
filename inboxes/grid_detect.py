@@ -77,31 +77,62 @@ def _ink_mask(gray: np.ndarray) -> np.ndarray:
     )
 
 
-def find_grid_quad(ink: np.ndarray) -> np.ndarray | None:
-    """The four corners of the largest plausible grid-shaped contour."""
+def _quad_from_contour(contour: np.ndarray) -> np.ndarray | None:
+    """Approximate a contour by four corners, rejecting degenerate results."""
+    perimeter = cv2.arcLength(contour, True)
+    for epsilon in (0.01, 0.02, 0.03, 0.04, 0.05):
+        approx = cv2.approxPolyDP(contour, epsilon * perimeter, True)
+        if len(approx) != 4:
+            continue
+        quad = approx.reshape(4, 2).astype(np.float32)
+        # Corners must be distinct; approxPolyDP can collapse two together on
+        # a contour that isn't really quadrilateral, which warps to nonsense.
+        distances = [
+            float(np.linalg.norm(quad[i] - quad[j])) for i in range(4) for j in range(i + 1, 4)
+        ]
+        if min(distances) < 10:
+            continue
+        return _order_corners(quad)
+    return None
+
+
+def grid_quad_candidates(ink: np.ndarray, limit: int = 5) -> list[np.ndarray]:
+    """Plausible grid quadrilaterals, largest first.
+
+    Returns several candidates rather than just the biggest: a photo often
+    contains a larger dark region than the grid itself (a bezel, a shadow, a
+    hand), and picking purely by area can select it. The caller disambiguates
+    by trying to measure a lattice in each, which is a far stronger signal
+    that something actually is the puzzle grid.
+    """
     height, width = ink.shape
     closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    best = None
+    scored = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         if w * h < MIN_GRID_AREA_FRACTION * height * width:
             continue
         if not (MIN_ASPECT < w / h < MAX_ASPECT):
             continue
-        if best is None or w * h > best[0]:
-            best = (w * h, contour)
-    if best is None:
-        return None
+        scored.append((w * h, contour))
+    scored.sort(key=lambda item: item[0], reverse=True)
 
-    contour = best[1]
-    perimeter = cv2.arcLength(contour, True)
-    for epsilon in (0.01, 0.02, 0.03, 0.04, 0.05):
-        approx = cv2.approxPolyDP(contour, epsilon * perimeter, True)
-        if len(approx) == 4:
-            return _order_corners(approx.reshape(4, 2).astype(np.float32))
-    return None
+    quads = []
+    for _, contour in scored[: limit * 2]:
+        quad = _quad_from_contour(contour)
+        if quad is not None:
+            quads.append(quad)
+        if len(quads) >= limit:
+            break
+    return quads
+
+
+def find_grid_quad(ink: np.ndarray) -> np.ndarray | None:
+    """The four corners of the largest plausible grid-shaped contour."""
+    candidates = grid_quad_candidates(ink, limit=1)
+    return candidates[0] if candidates else None
 
 
 def _order_corners(quad: np.ndarray) -> np.ndarray:
@@ -195,17 +226,19 @@ def rectify(bgr: np.ndarray) -> RectifiedGrid | None:
         return None
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr.ndim == 3 else bgr
     flat = flat_field(gray)
-    quad = find_grid_quad(_ink_mask(flat))
-    if quad is None:
-        return None
-    try:
-        warped = warp_to_rect(flat, quad)
-    except ValueError:
-        return None
 
-    binary = binarize(warped)
-    dimensions = measure_dimensions(binary)
-    if dimensions is None:
-        return None
-    rows, cols = dimensions
-    return RectifiedGrid(image=binary, rows=rows, cols=cols)
+    # Try each candidate region and keep the first one a lattice can actually
+    # be measured in -- being able to measure a regular grid of square cells
+    # is what identifies the puzzle, not being the biggest dark shape.
+    for quad in grid_quad_candidates(_ink_mask(flat)):
+        try:
+            warped = warp_to_rect(flat, quad)
+        except ValueError:
+            continue
+        binary = binarize(warped)
+        dimensions = measure_dimensions(binary)
+        if dimensions is None:
+            continue
+        rows, cols = dimensions
+        return RectifiedGrid(image=binary, rows=rows, cols=cols)
+    return None
