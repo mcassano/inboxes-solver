@@ -1,0 +1,176 @@
+{
+  "rows": 8,
+  "cols": 12,
+  "clues": [
+    {
+      "row": 0,
+      "col": 11,
+      "value": 12
+    },
+    {
+      "row": 1,
+      "col": 4,
+      "value": 12
+    },
+    {
+      "row": 2,
+      "col": 0,
+      "value": 1
+    },
+    {
+      "row": 2,
+      "col": 1,
+      "value": 3
+    },
+    {
+      "row": 2,
+      "col": 5,
+      "value": 4
+    },
+    {
+      "row": 2,
+      "col": 8,
+      "value": 1
+    },
+    {
+      "row": 2,
+      "col": 9,
+      "value": 1
+    },
+    {
+      "row": 2,
+      "col": 10,
+      "value": 2
+    },
+    {
+      "row": 3,
+      "col": 0,
+      "value": 1
+    },
+    {
+      "row": 3,
+      "col": 1,
+      "value": 2
+    },
+    {
+      "row": 3,
+      "col": 3,
+      "value": 1
+    },
+    {
+      "row": 3,
+      "col": 4,
+      "value": 1
+    },
+    {
+      "row": 3,
+      "col": 6,
+      "value": 2
+    },
+    {
+      "row": 3,
+      "col": 7,
+      "value": 1
+    },
+    {
+      "row": 3,
+      "col": 10,
+      "value": 4
+    },
+    {
+      "row": 4,
+      "col": 0,
+      "value": 2
+    },
+    {
+      "row": 4,
+      "col": 2,
+      "value": 2
+    },
+    {
+      "row": 4,
+      "col": 4,
+      "value": 1
+    },
+    {
+      "row": 4,
+      "col": 5,
+      "value": 1
+    },
+    {
+      "row": 4,
+      "col": 7,
+      "value": 2
+    },
+    {
+      "row": 4,
+      "col": 8,
+      "value": 2
+    },
+    {
+      "row": 4,
+      "col": 11,
+      "value": 2
+    },
+    {
+      "row": 5,
+      "col": 1,
+      "value": 2
+    },
+    {
+      "row": 5,
+      "col": 2,
+      "value": 1
+    },
+    {
+      "row": 5,
+      "col": 4,
+      "value": 2
+    },
+    {
+      "row": 5,
+      "col": 6,
+      "value": 2
+    },
+    {
+      "row": 5,
+      "col": 9,
+      "value": 3
+    },
+    {
+      "row": 5,
+      "col": 11,
+      "value": 2
+    },
+    {
+      "row": 6,
+      "col": 0,
+      "value": 1
+    },
+    {
+      "row": 6,
+      "col": 1,
+      "value": 1
+    },
+    {
+      "row": 6,
+      "col": 7,
+      "value": 7
+    },
+    {
+      "row": 6,
+      "col": 9,
+      "value": 2
+    },
+    {
+      "row": 6,
+      "col": 11,
+      "value": 1
+    },
+    {
+      "row": 7,
+      "col": 1,
+      "value": 12
+    }
+  ]
+}
