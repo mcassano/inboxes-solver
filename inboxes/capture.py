@@ -10,11 +10,18 @@ camera:
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+# How often (in seconds) to print the live sharpness/motion readout to
+# stderr while waiting. This is independent of the on-screen preview text,
+# which flickers by too fast at ~30fps to read a specific number off of --
+# the terminal log is what you'd actually copy-paste to report a problem.
+DEBUG_LOG_INTERVAL_SECONDS = 0.5
 
 DEFAULT_CAMERA_INDEX = 0
 DEFAULT_OUT_PATH = Path("webcam_capture.png")
@@ -92,6 +99,7 @@ def capture_from_webcam(
     motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
     settle_frames: int = DEFAULT_SETTLE_FRAMES,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    debug_log: bool = True,
 ) -> Path:
     """Wait for a sharp, steady frame from the webcam, save it, return its path.
 
@@ -114,6 +122,7 @@ def capture_from_webcam(
     detector = SettleDetector(sharpness_threshold, motion_threshold, settle_frames)
     prev_gray: np.ndarray | None = None
     start = time.monotonic()
+    last_log = start
     window = "inboxes: hold the puzzle steady..."
 
     try:
@@ -133,6 +142,16 @@ def capture_from_webcam(
             motion = motion_score(prev_gray, gray) if prev_gray is not None else float("inf")
             settled = detector.update(sharpness, motion)
             prev_gray = gray
+
+            now = time.monotonic()
+            if debug_log and now - last_log >= DEBUG_LOG_INTERVAL_SECONDS:
+                last_log = now
+                print(
+                    f"[capture] t={now - start:4.1f}s  sharpness={sharpness:7.1f} "
+                    f"(need >= {sharpness_threshold:.0f})  motion={motion:5.2f} "
+                    f"(need <= {motion_threshold:.1f})  streak={detector.streak}/{settle_frames}",
+                    file=sys.stderr,
+                )
 
             if show_preview:
                 border = (0, 200, 0) if settled else (0, 0, 200)
