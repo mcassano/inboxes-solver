@@ -6,6 +6,27 @@ import argparse
 import sys
 from pathlib import Path
 
+try:
+    from .capture import (
+        DEFAULT_CAMERA_INDEX,
+        DEFAULT_MOTION_THRESHOLD,
+        DEFAULT_OUT_PATH as DEFAULT_CAPTURE_OUT,
+        DEFAULT_SETTLE_FRAMES,
+        DEFAULT_SHARPNESS_THRESHOLD,
+        CaptureError,
+        capture_from_webcam,
+    )
+except ImportError:
+    # opencv-python isn't installed. --webcam just won't be usable (main()
+    # reports that clearly below); --screenshot and --puzzle don't need it.
+    DEFAULT_CAMERA_INDEX = 0
+    DEFAULT_MOTION_THRESHOLD = 3.0
+    DEFAULT_SETTLE_FRAMES = 10
+    DEFAULT_SHARPNESS_THRESHOLD = 150.0
+    DEFAULT_CAPTURE_OUT = Path("webcam_capture.png")
+    CaptureError = RuntimeError
+    capture_from_webcam = None
+
 from .llm_solver import DEFAULT_MODEL as DEFAULT_LLM_SOLVER_MODEL
 from .llm_solver import llm_solve
 from .puzzle import Puzzle
@@ -25,10 +46,48 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument(
         "--puzzle", type=Path, help="path to a puzzle already in the standardized JSON format"
     )
+    source.add_argument(
+        "--webcam",
+        action="store_true",
+        help="capture the puzzle from a webcam instead of a file (hold it up and hold still)",
+    )
     parser.add_argument(
         "--vision-model",
         default=DEFAULT_VISION_MODEL,
         help=f"OpenRouter vision model used to decode a screenshot (default: {DEFAULT_VISION_MODEL})",
+    )
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=DEFAULT_CAMERA_INDEX,
+        help=f"which camera to use with --webcam (default: {DEFAULT_CAMERA_INDEX}); if it opens the "
+        "wrong camera, try 1, 2, ...",
+    )
+    parser.add_argument(
+        "--capture-out",
+        type=Path,
+        default=DEFAULT_CAPTURE_OUT,
+        help=f"where to save the raw --webcam photo, for inspecting what was captured "
+        f"(default: {DEFAULT_CAPTURE_OUT})",
+    )
+    parser.add_argument(
+        "--sharpness-threshold",
+        type=float,
+        default=DEFAULT_SHARPNESS_THRESHOLD,
+        help=f"--webcam: minimum focus score to accept a frame (default: {DEFAULT_SHARPNESS_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--motion-threshold",
+        type=float,
+        default=DEFAULT_MOTION_THRESHOLD,
+        help=f"--webcam: maximum frame-to-frame movement to accept (default: {DEFAULT_MOTION_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--settle-frames",
+        type=int,
+        default=DEFAULT_SETTLE_FRAMES,
+        help=f"--webcam: consecutive good frames required before capturing "
+        f"(default: {DEFAULT_SETTLE_FRAMES})",
     )
     parser.add_argument(
         "--solver",
@@ -61,10 +120,32 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.screenshot:
-        print(f"Decoding {args.screenshot} with {args.vision_model}...", file=sys.stderr)
+    image_path = args.screenshot
+    if args.webcam:
+        if capture_from_webcam is None:
+            print(
+                "error: --webcam requires opencv-python (pip install -r requirements.txt)",
+                file=sys.stderr,
+            )
+            return 1
+        print("Waiting for a sharp, steady shot from the webcam (hold the puzzle up)...", file=sys.stderr)
         try:
-            puzzle = decode_screenshot(args.screenshot, model=args.vision_model)
+            image_path = capture_from_webcam(
+                camera_index=args.camera_index,
+                out_path=args.capture_out,
+                sharpness_threshold=args.sharpness_threshold,
+                motion_threshold=args.motion_threshold,
+                settle_frames=args.settle_frames,
+            )
+        except CaptureError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Captured {image_path}", file=sys.stderr)
+
+    if image_path:
+        print(f"Decoding {image_path} with {args.vision_model}...", file=sys.stderr)
+        try:
+            puzzle = decode_screenshot(image_path, model=args.vision_model)
         except VisionDecodeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             print(

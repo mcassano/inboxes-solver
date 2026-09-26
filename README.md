@@ -7,18 +7,20 @@ which contain a number, is partitioned into rectangles so that every
 rectangle contains exactly one number, and that number equals the
 rectangle's area.
 
-Given a puzzle — as a screenshot or as JSON — this tool solves it
-deterministically and renders the solution as a PNG.
+Given a puzzle — as a screenshot, a live webcam capture, or as JSON — this
+tool solves it deterministically and renders the solution as a PNG.
 
 ![Example puzzle](examples/sample_puzzle.png)
 ![Example solution](examples/sample_solution.png)
 
 ## How it works
 
-1. **Read the puzzle.** Either point the tool at a screenshot, which is sent
-   to a vision-capable model on [OpenRouter](https://openrouter.ai/) to
-   transcribe into a standardized JSON format, or hand it a puzzle already in
-   that format directly. Screenshots are auto-cropped to their content and
+1. **Read the puzzle.** Point the tool at a screenshot, capture one live from
+   a webcam (hold your phone up to it — see `--webcam` below), or hand it a
+   puzzle already in the standardized JSON format directly. A screenshot or
+   webcam capture is sent to a vision-capable model on
+   [OpenRouter](https://openrouter.ai/) to transcribe into that JSON format.
+   Screenshots are auto-cropped to their content and
    upscaled before transcription, since a puzzle grid is often a small
    fraction of a full phone screenshot. Every transcription is double-checked
    by actually solving it: a genuine Inboxes puzzle always has exactly one
@@ -83,6 +85,25 @@ Decode a screenshot first, then solve it:
 ```bash
 python -m inboxes --screenshot puzzle.png --decoded-out puzzle.json --out solution.json --png solution.png
 ```
+
+Capture the puzzle from a webcam instead of a saved file — hold the phone's
+screen up to the camera and hold it steady; a preview window shows a live
+sharpness/motion readout and captures automatically once the shot settles:
+
+```bash
+python -m inboxes --webcam --decoded-out puzzle.json --out solution.json --png solution.png
+```
+
+`--webcam` requires the `opencv-python` extra in `requirements.txt`, and (on
+macOS) camera access granted to your terminal under System Settings > Privacy
+& Security > Camera — the first run will prompt for this. If it opens the
+wrong camera (e.g. an iPhone connected via Continuity Camera instead of a
+built-in/external webcam), pass `--camera-index 1`, `2`, etc. to find the
+right one. If it captures too eagerly or never settles, tune
+`--sharpness-threshold` / `--motion-threshold` / `--settle-frames` using the
+live numbers in the preview window as a guide. The raw photo is saved to
+`webcam_capture.png` (override with `--capture-out`) so you can check exactly
+what was captured if decoding goes wrong.
 
 Solve with an LLM instead of the deterministic solver:
 
