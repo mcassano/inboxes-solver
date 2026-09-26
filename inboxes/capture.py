@@ -27,20 +27,20 @@ DEFAULT_CAMERA_INDEX = 0
 DEFAULT_OUT_PATH = Path("webcam_capture.png")
 
 # Variance of the Laplacian of the grayscale frame -- a standard, simple
-# focus/blur metric. Higher means sharper (more high-frequency detail).
-#
-# This is a full-frame average, so it's diluted by whatever fraction of the
-# frame isn't the puzzle itself (background, hand, phone bezel) -- it's not
-# comparable to "textbook" Laplacian-variance thresholds tuned on a frame
-# that's mostly in-focus subject. 150 (a generic guess) was never reachable
-# in practice: measured live against a Studio Display webcam with a phone
-# screen clearly in frame and readable, steady-state values sat around
-# 9-15, vs. ~0 with nothing in frame. 8.0 sits comfortably below that
-# steady-state range with headroom, while still well above "nothing/totally
-# blurry". If a different camera or distance needs a different number, the
-# live [capture] log printed while waiting shows the real numbers to
-# recalibrate --sharpness-threshold against.
-DEFAULT_SHARPNESS_THRESHOLD = 8.0
+# focus/blur metric. Higher means sharper (more high-frequency detail). It's
+# a full-frame average, so it's diluted by whatever fraction of the frame
+# isn't the puzzle itself (background, hand, phone bezel), which makes it
+# highly scene- and distance-dependent and hard to pick one good number for
+# sight unseen -- measured live, 150 (a generic guess) was never reachable,
+# and even a recalibrated 8.0 didn't reliably distinguish good shots from bad
+# ones. Since you're already looking at the live preview and choosing the
+# moment to press SPACE, your own judgment of "is this readable" is a better
+# focus signal than this metric -- so it's kept low enough to be effectively
+# non-blocking (just a sanity floor above "camera pointed at nothing") and is
+# still shown live so you can see it, but --motion-threshold is what actually
+# gates the capture. Raise --sharpness-threshold yourself if you want it to
+# matter more.
+DEFAULT_SHARPNESS_THRESHOLD = 1.0
 
 # Mean absolute pixel difference (0-255 scale) between consecutive grayscale
 # frames. Lower means less motion between frames.
@@ -68,9 +68,14 @@ MIN_SCREEN_AREA_FRACTION = 0.05
 # no-op anyway -- so treat anything this large as no detection.
 MAX_SCREEN_AREA_FRACTION = 0.92
 
-# How close (as a fraction of that dimension) the detected screen region can
-# get to a frame edge before we warn that it looks cropped.
-EDGE_WARNING_MARGIN_FRACTION = 0.02
+# How close, in pixels, the detected screen region can get to a frame edge
+# before we warn that it looks cropped. A small fixed margin rather than a
+# fraction of the frame: a percentage-based margin (e.g. 2% of a 1920px-wide
+# frame is ~38px) fired even when there was clearly visible margin in the
+# photo, most likely because glare/reflection off the phone's glass widens
+# the detected "bright" blob without any actual puzzle content being cut off.
+# This should only fire for the region genuinely touching the boundary.
+EDGE_WARNING_MARGIN_PIXELS = 3
 
 
 class CaptureError(RuntimeError):
@@ -129,9 +134,8 @@ def _crop_to_screen(frame_bgr: np.ndarray) -> np.ndarray:
 
     height, width = frame_bgr.shape[:2]
     x0, y0, x1, y1 = bbox
-    margin_x = round(width * EDGE_WARNING_MARGIN_FRACTION)
-    margin_y = round(height * EDGE_WARNING_MARGIN_FRACTION)
-    if x0 <= margin_x or y0 <= margin_y or x1 >= width - margin_x or y1 >= height - margin_y:
+    margin = EDGE_WARNING_MARGIN_PIXELS
+    if x0 <= margin or y0 <= margin or x1 >= width - margin or y1 >= height - margin:
         print(
             "warning: the detected phone screen touches the edge of the camera's "
             "view -- part of the puzzle may be cropped off. Try holding it further "
