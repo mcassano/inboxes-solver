@@ -20,7 +20,20 @@ tool solves it deterministically and renders the solution as a PNG.
    puzzle already in the standardized JSON format directly. A screenshot or
    webcam capture is sent to a vision-capable model on
    [OpenRouter](https://openrouter.ai/) to transcribe into that JSON format.
-   Screenshots are auto-cropped to their content and
+
+   Before transcribing, the grid is located and measured with OpenCV rather
+   than left to the model (`inboxes.grid_detect`): its four corners are
+   found, it's perspective-corrected into a true rectangle, the lighting
+   gradient is divided out, and the row/column counts are recovered from the
+   lattice pitch by autocorrelation. The model is then handed a clean,
+   square, exactly-cropped grid *and told its dimensions*, so it only has to
+   read digits. This is what makes photographs work at all: in a photo of a
+   phone screen the grid is keystoned (measured: cells 14% wider on one side
+   than the other) and the grid lines are washed out (measured: contrast
+   standard deviation of 2.7 brightness levels, versus 17.9 after
+   correction), so a model asked to infer the lattice drifts by a row or a
+   column and mis-assigns clues. Screenshots are auto-cropped to their
+   content and
    upscaled before transcription, since a puzzle grid is often a small
    fraction of a full phone screenshot. Every transcription is double-checked
    by actually solving it: a genuine Inboxes puzzle always has exactly one

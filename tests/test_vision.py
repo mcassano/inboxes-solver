@@ -2,6 +2,7 @@ import base64
 import io
 import json
 
+import cv2
 import pytest
 from PIL import Image
 
@@ -228,3 +229,53 @@ def test_decode_screenshot_recovers_from_truncated_response(tmp_path, monkeypatc
     puzzle = vision.decode_screenshot(img_path, model="model-a", attempts_per_model=2)
     assert len(puzzle.clues) == 2
     assert responses == []
+
+
+def test_prepare_for_decode_measures_a_real_grid(tmp_path):
+    # A clean synthetic grid should be found, rectified and measured, so the
+    # model can be told the dimensions rather than counting lines itself.
+    import numpy as np
+    from tests.test_grid_detect import synthetic_grid
+
+    img_path = tmp_path / "grid.png"
+    cv2.imwrite(str(img_path), synthetic_grid(rows=11, cols=9))
+    data_url, dims = vision._prepare_for_decode(img_path)
+    assert data_url.startswith("data:image/png;base64,")
+    assert dims == (11, 9)
+
+
+def test_prepare_for_decode_falls_back_when_no_grid_found(tmp_path):
+    img_path = tmp_path / "plain.png"
+    _write_test_image(img_path, size=(60, 40))
+    data_url, dims = vision._prepare_for_decode(img_path)
+    assert data_url.startswith("data:image/png;base64,")
+    assert dims is None
+
+
+def test_decode_once_states_measured_dimensions_in_the_prompt(monkeypatch):
+    seen = {}
+
+    def fake_chat(model, messages, **kwargs):
+        seen["prompt"] = messages[0]["content"]
+        return json.dumps(UNIQUE_GRID_JSON)
+
+    monkeypatch.setattr(openrouter, "chat", fake_chat)
+    vision._decode_once("model-a", "data:image/png;base64,xx", dimensions=(2, 2))
+
+    assert "EXACTLY 2 rows" in seen["prompt"]
+    assert "EXACTLY 2 columns" in seen["prompt"]
+
+
+def test_decode_once_without_dimensions_uses_the_counting_prompt(monkeypatch):
+    seen = {}
+
+    def fake_chat(model, messages, **kwargs):
+        seen["prompt"] = messages[0]["content"]
+        return json.dumps(UNIQUE_GRID_JSON)
+
+    monkeypatch.setattr(openrouter, "chat", fake_chat)
+    vision._decode_once("model-a", "data:image/png;base64,xx", dimensions=None)
+
+    assert seen["prompt"] == vision.SYSTEM_PROMPT
+    # The sum invariant is the model's own check when nothing measured it.
+    assert "equals (rows) x (columns)" in seen["prompt"]

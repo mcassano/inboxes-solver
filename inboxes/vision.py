@@ -8,9 +8,10 @@ import base64
 import io
 from pathlib import Path
 
+import cv2
 from PIL import Image, ImageChops
 
-from . import openrouter
+from . import grid_detect, openrouter
 from .puzzle import Clue, Puzzle
 from .solver import Unsolvable, has_unique_solution
 
@@ -68,6 +69,36 @@ Work row by row down the image. Before answering, count the grid lines to \
 confirm the number of inner arrays matches the number of rows in the image \
 and each inner array's length matches the number of columns -- do not infer \
 the grid size from where the numbers are.
+
+As a final check, add up every number you transcribed. The clue rectangles \
+tile the grid exactly, so that total ALWAYS equals (rows) x (columns). If it \
+doesn't, your row or column count is wrong (the numbers themselves are \
+rarely the problem) -- recount and fix it before answering.
+"""
+
+# Used instead of the trailing paragraph above when the grid has already been
+# located and measured by inboxes.grid_detect: the image is then rectified and
+# cropped to the grid exactly, and the dimensions are known, so asking the
+# model to count rows only invites the drift this is meant to avoid.
+MEASURED_GRID_PROMPT = """\
+You transcribe a Shikaku ("Inboxes") puzzle grid from an image: a grid of \
+cells, some holding a number.
+
+This image has been cropped to EXACTLY the grid and perspective-corrected, so \
+the grid fills it edge to edge in equal-sized square cells. It has EXACTLY \
+{rows} rows and EXACTLY {cols} columns. Those counts were measured from the \
+image itself and are correct -- do not recount them, and do not output any \
+other shape.
+
+Read every one of the {rows}x{cols} cells and report its number, or null if \
+the cell is empty. Row r spans the vertical fraction r/{rows} to \
+(r+1)/{rows}; column c spans the horizontal fraction c/{cols} to \
+(c+1)/{cols}.
+
+Output ONLY a JSON object (no markdown fences, no commentary) of this shape, \
+with exactly {rows} inner arrays of exactly {cols} entries each:
+
+{{"grid": [[null, 6, null, ...], ...]}}
 """
 
 
@@ -100,13 +131,33 @@ def _prepare_image(path: str | Path) -> str:
         bottom = min(img.height, bottom + pad)
         img = img.crop((left, top, right, bottom))
 
+    return _to_data_url(img)
+
+
+def _to_data_url(img: Image.Image) -> str:
+    """Upscale for legibility (capped) and encode as a PNG data URL."""
     scale = max(1.0, min(2.0, MAX_IMAGE_DIMENSION / max(img.size)))
     if scale > 1.0:
         img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
-
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def _prepare_for_decode(path: str | Path) -> tuple[str, tuple[int, int] | None]:
+    """Return (data URL, measured (rows, cols) or None) for an image.
+
+    Prefers a rectified, measured grid (see inboxes.grid_detect), which is
+    what makes photographs usable: it removes the keystone distortion that
+    otherwise shifts clues into neighbouring cells, and it establishes the
+    grid dimensions by measurement instead of leaving the model to count
+    faint lines. Falls back to the plain autocrop whenever the grid can't be
+    found confidently.
+    """
+    grid = grid_detect.rectify(cv2.imread(str(path)))
+    if grid is None:
+        return _prepare_image(path), None
+    return _to_data_url(Image.fromarray(grid.image).convert("RGB")), (grid.rows, grid.cols)
 
 
 class VisionDecodeError(RuntimeError):
@@ -132,10 +183,17 @@ def _grid_to_puzzle(data: dict) -> Puzzle:
     return Puzzle(rows=len(grid), cols=cols, clues=clues)
 
 
-def _decode_once(model: str, data_url: str) -> Puzzle:
+def _decode_once(
+    model: str, data_url: str, dimensions: tuple[int, int] | None = None
+) -> Puzzle:
     """One single-shot decode attempt, fully checked. Raises on any defect."""
+    if dimensions is None:
+        prompt = SYSTEM_PROMPT
+    else:
+        rows, cols = dimensions
+        prompt = MEASURED_GRID_PROMPT.format(rows=rows, cols=cols)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": prompt},
         {
             "role": "user",
             "content": [
@@ -171,13 +229,13 @@ def decode_screenshot(
     be a consistent habit of a given model on a given image, not random
     noise -- re-sampling the same model usually reproduces the same error.
     """
-    data_url = _prepare_image(image_path)
+    data_url, dimensions = _prepare_for_decode(image_path)
     models = [model] + [m for m in FALLBACK_MODELS if m != model]
     last_error: Exception | None = None
     for candidate_model in models:
         for _ in range(attempts_per_model):
             try:
-                return _decode_once(candidate_model, data_url)
+                return _decode_once(candidate_model, data_url, dimensions)
             except (ValueError, KeyError, TypeError, Unsolvable, openrouter.OpenRouterError) as exc:
                 last_error = exc
     raise VisionDecodeError(
