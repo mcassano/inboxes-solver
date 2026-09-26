@@ -52,6 +52,47 @@ def test_unsolvable_raises():
         solve_puzzle(puzzle)
 
 
+def test_regression_colliding_forced_singles_are_not_placed():
+    # Regression test for a real puzzle that used to trigger overlapping
+    # rectangles: two clues could each look like a "forced single" against
+    # the grid state at the start of a propagation pass, but their sole
+    # candidates overlapped each other. The propagator placed both anyway
+    # without re-checking the grid in between, corrupting the tiling.
+    puzzle = Puzzle(
+        rows=11,
+        cols=9,
+        clues=[
+            Clue(row=0, col=1, value=6),
+            Clue(row=0, col=4, value=6),
+            Clue(row=0, col=8, value=6),
+            Clue(row=1, col=3, value=8),
+            Clue(row=2, col=6, value=2),
+            Clue(row=2, col=8, value=3),
+            Clue(row=3, col=0, value=2),
+            Clue(row=3, col=4, value=6),
+            Clue(row=5, col=1, value=6),
+            Clue(row=5, col=8, value=2),
+            Clue(row=6, col=0, value=5),
+            Clue(row=6, col=2, value=2),
+            Clue(row=6, col=5, value=4),
+            Clue(row=6, col=6, value=8),
+            Clue(row=7, col=3, value=4),
+            Clue(row=8, col=1, value=2),
+            Clue(row=8, col=2, value=2),
+            Clue(row=8, col=4, value=2),
+            Clue(row=8, col=5, value=2),
+            Clue(row=8, col=7, value=4),
+            Clue(row=9, col=3, value=4),
+            Clue(row=10, col=1, value=2),
+            Clue(row=10, col=4, value=3),
+            Clue(row=10, col=6, value=4),
+            Clue(row=10, col=7, value=4),
+        ],
+    )
+    solved = solve_puzzle(puzzle)
+    verify_solution(solved)  # raises ValueError on overlap, area mismatch, etc.
+
+
 @pytest.mark.parametrize("seed", range(20))
 def test_random_small_puzzles_are_solved_correctly(seed):
     puzzle, _ = random_puzzle(rows=5, cols=5, seed=seed)

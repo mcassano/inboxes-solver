@@ -113,7 +113,16 @@ class ShikakuSolver:
             for idx in list(remaining.keys()):
                 opts = remaining[idx]
                 if len(opts) == 1:
-                    self._place(grid, opts[0], idx)
+                    rect = opts[0]
+                    # Placing an earlier single this same pass may have
+                    # invalidated this one (two forced singles can overlap
+                    # each other even though each still fit the grid as of
+                    # the filter pass above) -- re-check right before
+                    # placing, and treat a stale candidate as a conflict
+                    # rather than silently placing an overlapping rectangle.
+                    if not self._fits(grid, rect):
+                        return None
+                    self._place(grid, rect, idx)
                     del remaining[idx]
                     changed = True
         return grid, remaining
