@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 cv2 = pytest.importorskip("cv2")
@@ -157,3 +159,101 @@ def test_capture_from_webcam_times_out_if_never_settled(tmp_path, monkeypatch):
             timeout_seconds=0.05,
         )
     assert fake.released
+
+
+def test_capture_from_webcam_ignores_good_frames_before_space_is_pressed(tmp_path, monkeypatch):
+    board = _checkerboard(size=32)
+    sharp_bgr = cv2.cvtColor(board, cv2.COLOR_GRAY2BGR)
+    frames = [sharp_bgr.copy() for _ in range(30)]
+    fake = _FakeCapture(frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+    monkeypatch.setattr(cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+
+    # No key for the first 15 (already sharp+steady) frames -- if arming
+    # didn't gate the detector, it would have settled well before this.
+    key_sequence = iter([-1] * 15 + [ord(" ")])
+    monkeypatch.setattr(cv2, "waitKey", lambda _delay: next(key_sequence, -1))
+
+    out_path = tmp_path / "capture.png"
+    result = capture_from_webcam(
+        out_path=out_path,
+        show_preview=True,
+        sharpness_threshold=10,
+        motion_threshold=1000,
+        settle_frames=3,
+        require_arm_key=True,
+    )
+
+    assert result == out_path
+    # 15 unarmed frames + the space-press frame + 3 more to build the streak.
+    assert len(fake._frames) <= 30 - 15 - 1 - 3
+
+
+def test_capture_from_webcam_never_settles_without_pressing_space(tmp_path, monkeypatch):
+    board = _checkerboard(size=32)
+    sharp_bgr = cv2.cvtColor(board, cv2.COLOR_GRAY2BGR)
+    frames = [sharp_bgr.copy() for _ in range(20)]
+    fake = _FakeCapture(frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+    monkeypatch.setattr(cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+    monkeypatch.setattr(cv2, "waitKey", lambda _delay: -1)  # space never pressed
+
+    with pytest.raises(CaptureError, match="failed to read a frame"):
+        capture_from_webcam(
+            out_path=tmp_path / "capture.png",
+            show_preview=True,
+            sharpness_threshold=10,
+            motion_threshold=1000,
+            settle_frames=3,
+        )
+
+
+def test_capture_from_webcam_abort_key_works_before_arming(tmp_path, monkeypatch):
+    fake = _FakeCapture([_solid_frame(128) for _ in range(5)])
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+    monkeypatch.setattr(cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+    monkeypatch.setattr(cv2, "waitKey", lambda _delay: ord("q"))
+
+    with pytest.raises(CaptureError, match="aborted by user"):
+        capture_from_webcam(out_path=tmp_path / "capture.png", show_preview=True)
+
+
+def test_capture_from_webcam_timeout_only_counts_after_arming(tmp_path, monkeypatch):
+    blank = _solid_frame(128)  # never sharp enough to settle once armed
+
+    class _InfiniteFakeCapture(_FakeCapture):
+        def read(self):
+            return True, blank.copy()
+
+    fake = _InfiniteFakeCapture(frames=[])
+    monkeypatch.setattr(cv2, "VideoCapture", lambda index: fake)
+    monkeypatch.setattr(cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+
+    # Each waitKey call advances a fake clock by 1s; space is pressed on the
+    # 5th call. If the 5 "unarmed" fake-seconds counted against the 2s
+    # timeout, this would raise almost immediately after arming instead of
+    # ~2-3 fake-seconds later.
+    calls = {"n": 0}
+
+    def fake_waitkey(_delay):
+        calls["n"] += 1
+        clock["t"] += 1.0
+        return ord(" ") if calls["n"] == 5 else -1
+
+    monkeypatch.setattr(cv2, "waitKey", fake_waitkey)
+
+    with pytest.raises(CaptureError, match="no sharp, steady frame"):
+        capture_from_webcam(
+            out_path=tmp_path / "capture.png",
+            show_preview=True,
+            sharpness_threshold=1e9,  # impossible, so it never settles once armed
+            timeout_seconds=2.0,
+        )
+    assert clock["t"] < 10.0

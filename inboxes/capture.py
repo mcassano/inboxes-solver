@@ -112,12 +112,22 @@ def capture_from_webcam(
     settle_frames: int = DEFAULT_SETTLE_FRAMES,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     debug_log: bool = True,
+    require_arm_key: bool = True,
 ) -> Path:
     """Wait for a sharp, steady frame from the webcam, save it, return its path.
 
-    Hold the puzzle's phone screen up to the camera; once `settle_frames`
-    consecutive frames are all sharp (see sharpness_score) and still (see
-    motion_score), the current frame is saved to `out_path` and returned.
+    With `require_arm_key` (the default whenever there's a preview window),
+    nothing can be captured until you press SPACE to "arm" it -- take as long
+    as you need to get the phone into frame first. Only once armed does the
+    quality gate start counting: `settle_frames` consecutive frames all sharp
+    (see sharpness_score) and still (see motion_score) after that point.
+    Requiring the gate to pass *after* arming, rather than capturing on the
+    keypress itself, also avoids the keypress's own jostle ruining the shot.
+    `timeout_seconds` only starts counting down once armed.
+
+    Without a preview window (or with `require_arm_key=False`) there's no way
+    to press anything, so it's armed from the very first frame -- this is the
+    fully automatic mode used by tests and any non-interactive caller.
     """
     out_path = Path(out_path)
     cap = cv2.VideoCapture(camera_index)
@@ -133,15 +143,20 @@ def capture_from_webcam(
 
     detector = SettleDetector(sharpness_threshold, motion_threshold, settle_frames)
     prev_gray: np.ndarray | None = None
+    armed = not (show_preview and require_arm_key)
     start = time.monotonic()
+    armed_at = start if armed else None
     last_log = start
     window = "inboxes: hold the puzzle steady..."
 
+    if not armed:
+        print("Get the puzzle in frame, then press SPACE (preview window focused) to arm...", file=sys.stderr)
+
     try:
         while True:
-            if time.monotonic() - start > timeout_seconds:
+            if armed and time.monotonic() - armed_at > timeout_seconds:
                 raise CaptureError(
-                    f"no sharp, steady frame found within {timeout_seconds:.0f}s "
+                    f"no sharp, steady frame found within {timeout_seconds:.0f}s of arming "
                     "-- is the camera pointed at the puzzle?"
                 )
 
@@ -152,38 +167,47 @@ def capture_from_webcam(
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             sharpness = sharpness_score(gray)
             motion = motion_score(prev_gray, gray) if prev_gray is not None else float("inf")
-            settled = detector.update(sharpness, motion)
+            settled = detector.update(sharpness, motion) if armed else False
             prev_gray = gray
 
             now = time.monotonic()
             if debug_log and now - last_log >= DEBUG_LOG_INTERVAL_SECONDS:
                 last_log = now
+                state = f"streak={detector.streak}/{settle_frames}" if armed else "not armed (press SPACE)"
                 print(
                     f"[capture] t={now - start:4.1f}s  sharpness={sharpness:7.1f} "
                     f"(need >= {sharpness_threshold:.0f})  motion={motion:5.2f} "
-                    f"(need <= {motion_threshold:.1f})  streak={detector.streak}/{settle_frames}",
+                    f"(need <= {motion_threshold:.1f})  {state}",
                     file=sys.stderr,
                 )
 
             if show_preview:
-                border = (0, 200, 0) if settled else (0, 0, 200)
+                if not armed:
+                    border, label = (0, 165, 255), "press SPACE to arm"
+                elif settled:
+                    border, label = (0, 200, 0), "captured!"
+                else:
+                    border, label = (0, 0, 200), f"streak={detector.streak}/{settle_frames}"
                 display = frame.copy()
                 cv2.rectangle(display, (0, 0), (display.shape[1] - 1, display.shape[0] - 1), border, 8)
                 cv2.putText(
                     display,
-                    f"sharpness={sharpness:6.1f} (need >={sharpness_threshold:.0f})  "
-                    f"motion={motion:5.2f} (need <={motion_threshold:.1f})  "
-                    f"streak={detector.streak}/{settle_frames}",
+                    f"{label}   sharpness={sharpness:6.1f} (need >={sharpness_threshold:.0f})  "
+                    f"motion={motion:5.2f} (need <={motion_threshold:.1f})",
                     (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
-                    (0, 200, 0) if settled else (0, 0, 200),
+                    border,
                     2,
                 )
                 cv2.imshow(window, display)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):  # 'q' or Esc
                     raise CaptureError("aborted by user")
+                if not armed and key == ord(" "):
+                    armed = True
+                    armed_at = time.monotonic()
+                    print("Armed -- hold steady...", file=sys.stderr)
 
             if settled:
                 out_path.parent.mkdir(parents=True, exist_ok=True)

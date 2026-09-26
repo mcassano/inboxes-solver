@@ -86,9 +86,11 @@ Decode a screenshot first, then solve it:
 python -m inboxes --screenshot puzzle.png --decoded-out puzzle.json --out solution.json --png solution.png
 ```
 
-Capture the puzzle from a webcam instead of a saved file — hold the phone's
-screen up to the camera and hold it steady; a preview window shows a live
-sharpness/motion readout and captures automatically once the shot settles:
+Capture the puzzle from a webcam instead of a saved file — get the phone's
+screen in frame in the preview window, press SPACE once it's positioned, then
+hold it steady; it captures automatically once the shot settles after that
+(so it won't fire early while you're still getting it into position, and the
+keypress itself doesn't jostle the shot). Press `q` or Esc to abort:
 
 ```bash
 python -m inboxes --webcam --decoded-out puzzle.json --out solution.json --png solution.png
